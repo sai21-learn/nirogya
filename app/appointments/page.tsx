@@ -1,0 +1,481 @@
+"use client"
+
+import { useState, useEffect } from "react"
+import Link from "next/link"
+import { Calendar, Clock, X, Check, ChevronLeft, ChevronRight, Star, Menu, MapPin, Video, User } from "lucide-react"
+import { useRouter } from "next/navigation"
+import { createBrowserClient } from "@supabase/ssr"
+import type { Database } from "@/lib/database.types"
+
+interface Doctor {
+  id: string
+  name: string
+  specialization: string
+  consultation_fee: number
+  address: {
+    street: string
+    city: string
+    state: string
+    postalCode: string
+    country: string
+  }
+  consultation_types: string[]
+  bio?: string
+  experience_years?: number
+  qualifications?: string[]
+  profiles?: {
+    full_name: string
+    avatar_url?: string
+  }
+}
+
+interface Appointment {
+  id: string
+  doctor_id: string
+  patient_id: string
+  appointment_date: string
+  status: "pending" | "confirmed" | "completed" | "cancelled"
+  consultation_type: "in-person" | "video"
+  patient_notes?: string
+  symptoms?: string
+  doctors?: Doctor
+  patients?: {
+    profiles: {
+      full_name: string
+      avatar_url?: string
+    }
+  }
+}
+
+export default function AppointmentsPage() {
+  const [appointments, setAppointments] = useState<Appointment[]>([])
+  const [doctors, setDoctors] = useState<Doctor[]>([])
+  const [selectedDoctor, setSelectedDoctor] = useState<Doctor | null>(null)
+  const [selectedDate, setSelectedDate] = useState<string>("")
+  const [selectedTime, setSelectedTime] = useState<string>("")
+  const [symptoms, setSymptoms] = useState<string>("")
+  const [notes, setNotes] = useState<string>("")
+  const [showBookingForm, setShowBookingForm] = useState(false)
+  const [currentMonth, setCurrentMonth] = useState(new Date())
+  const [isMenuOpen, setIsMenuOpen] = useState(false)
+  const [loading, setLoading] = useState({
+    appointments: true,
+    doctors: true,
+    booking: false
+  })
+  const [error, setError] = useState<string | null>(null)
+  const router = useRouter()
+  const supabase = createBrowserClient<Database>(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  )
+
+  useEffect(() => {
+    const fetchData = async (user: any) => {
+      try {
+        setLoading(prev => ({ ...prev, appointments: true, doctors: true }));
+
+        const appointmentsResponse = await fetch(`/api/appointments?userId=${user.id}`);
+        if (!appointmentsResponse.ok) throw new Error('Failed to fetch appointments');
+        const appointmentsData = await appointmentsResponse.json();
+        setAppointments(appointmentsData);
+
+        const doctorsResponse = await fetch('/api/doctors');
+        if (!doctorsResponse.ok) throw new Error('Failed to fetch doctors');
+        const doctorsData = await doctorsResponse.json();
+        
+        const formattedDoctors = doctorsData.map((doctor: any) => ({
+          ...doctor,
+          name: doctor.profiles?.full_name || 'Dr. Unknown',
+          profiles: doctor.profiles
+        }));
+        
+        setDoctors(formattedDoctors);
+        setError(null);
+      } catch (err) {
+        console.error('Error fetching data:', err);
+        setError('Failed to load data. Please try again later.');
+      } finally {
+        setLoading(prev => ({ ...prev, appointments: false, doctors: false }));
+      }
+    };
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (session?.user) {
+        fetchData(session.user);
+      } else {
+        router.push('/login');
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [router, supabase.auth]);
+
+  const timeSlots = [
+    '09:00', '10:00', '11:00', '13:00', '14:00', '15:00', '16:00', '17:00'
+  ]
+
+  const getDaysInMonth = (date: Date) => {
+    return new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate()
+  }
+
+  const getFirstDayOfMonth = (date: Date) => {
+    return new Date(date.getFullYear(), date.getMonth(), 1).getDay()
+  }
+
+  const generateCalendarDays = () => {
+    const daysInMonth = getDaysInMonth(currentMonth)
+    const firstDay = getFirstDayOfMonth(currentMonth)
+    const days = []
+    
+    // Add empty cells for days before the first day of the month
+    for (let i = 0; i < firstDay; i++) {
+      days.push(null)
+    }
+    
+    // Add days of the month
+    for (let i = 1; i <= daysInMonth; i++) {
+      days.push(i)
+    }
+    
+    return days
+  }
+
+  const handleBookAppointment = async () => {
+    if (!selectedDoctor || !selectedDate || !selectedTime) return
+    
+    try {
+      setLoading(prev => ({ ...prev, booking: true }))
+      setError(null)
+      
+      const { data: { user }, error: authError } = await supabase.auth.getUser()
+      if (authError || !user) {
+        router.push('/login')
+        return
+      }
+      
+      const appointmentDateTime = new Date(`${selectedDate}T${selectedTime}:00`)
+      
+      const response = await fetch('/api/appointments', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          patient_id: user.id,
+          doctor_id: selectedDoctor.id,
+          appointment_date: appointmentDateTime.toISOString(),
+          consultation_type: 'in-person',
+          symptoms: symptoms,
+          patient_notes: notes
+        }),
+      })
+      
+      if (!response.ok) {
+        throw new Error('Failed to book appointment')
+      }
+      
+      // Refresh appointments
+      const appointmentsResponse = await fetch(`/api/appointments?userId=${user.id}`)
+      if (!appointmentsResponse.ok) throw new Error('Failed to fetch updated appointments')
+      const appointmentsData = await appointmentsResponse.json()
+      setAppointments(appointmentsData)
+      
+      // Reset form
+      setShowBookingForm(false)
+      setSelectedDoctor(null)
+      setSelectedDate('')
+      setSelectedTime('')
+      setSymptoms('')
+      setNotes('')
+      
+    } catch (err) {
+      console.error('Error booking appointment:', err)
+      setError('Failed to book appointment. Please try again.')
+    } finally {
+      setLoading(prev => ({ ...prev, booking: false }))
+    }
+  }
+
+  const cancelAppointment = async (id: string) => {
+    if (!confirm('Are you sure you want to cancel this appointment?')) return
+    
+    try {
+      const response = await fetch(`/api/appointments/${id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          status: 'cancelled'
+        }),
+      })
+      
+      if (!response.ok) {
+        throw new Error('Failed to cancel appointment')
+      }
+      
+      // Refresh appointments
+      const { data: { user }, error: authError } = await supabase.auth.getUser()
+      if (authError || !user) {
+        router.push('/login')
+        return
+      }
+      
+      const appointmentsResponse = await fetch(`/api/appointments?userId=${user.id}`)
+      if (!appointmentsResponse.ok) throw new Error('Failed to fetch updated appointments')
+      const appointmentsData = await appointmentsResponse.json()
+      setAppointments(appointmentsData)
+      
+    } catch (err) {
+      console.error('Error cancelling appointment:', err)
+      setError('Failed to cancel appointment. Please try again.')
+    }
+  }
+
+  const formatDate = (dateString: string) => {
+    try {
+      const date = new Date(dateString)
+      return date.toLocaleDateString('en-US', {
+        weekday: 'short',
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric'
+      })
+    } catch (error) {
+      console.error('Error formatting date:', error)
+      return 'Invalid date'
+    }
+  }
+
+  const formatTime = (dateString: string) => {
+    try {
+      const date = new Date(dateString)
+      return date.toLocaleTimeString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit'
+      })
+    } catch (error) {
+      console.error('Error formatting time:', error)
+      return 'Invalid time'
+    }
+  }
+
+  const calendarDays = generateCalendarDays()
+  const monthName = currentMonth.toLocaleDateString("en-US", { month: "long", year: "numeric" })
+  
+  // Filter out past appointments and sort by date
+  const upcomingAppointments = [...appointments]
+    .filter(appointment => {
+      const appointmentDate = new Date(appointment.appointment_date)
+      return appointmentDate >= new Date() && appointment.status !== 'cancelled'
+    })
+    .sort((a, b) => 
+      new Date(a.appointment_date).getTime() - new Date(b.appointment_date).getTime()
+    )
+
+  return (
+    <div className="min-h-screen bg-[#f5f5f0]">
+      {/* Navigation */}
+      <nav className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-[#d4d4c8]/30">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center h-16">
+            <Link href="/" className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-[#1a1a1a] rounded-xl flex items-center justify-center">
+                <span className="text-white font-bold text-sm">N</span>
+              </div>
+              <span className="text-lg font-semibold text-[#1a1a1a]">Nirogya</span>
+            </Link>
+
+            {/* Desktop Menu */}
+            <div className="hidden md:flex items-center gap-8">
+              <Link href="/dashboard" className="text-[#6b6b6b] hover:text-[#1a1a1a] transition-colors text-sm font-medium">
+                Dashboard
+              </Link>
+              <Link href="/appointments" className="text-[#1a1a1a] font-medium">
+                Appointments
+              </Link>
+              <Link href="/doctors" className="text-[#6b6b6b] hover:text-[#1a1a1a] transition-colors text-sm font-medium">
+                Find Doctors
+              </Link>
+              <Link href="/profile" className="text-[#6b6b6b] hover:text-[#1a1a1a] transition-colors text-sm font-medium">
+                Profile
+              </Link>
+            </div>
+
+            {/* Mobile menu button */}
+            <div className="md:hidden">
+              <button
+                onClick={() => setIsMenuOpen(!isMenuOpen)}
+                className="text-[#6b6b6b] hover:text-[#1a1a1a]"
+              >
+                <Menu className="h-6 w-6" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Mobile menu */}
+        {isMenuOpen && (
+          <div className="md:hidden bg-white border-t border-[#f0f0f0]">
+            <div className="px-2 pt-2 pb-3 space-y-1">
+              <Link
+                href="/dashboard"
+                className="block px-3 py-2 rounded-md text-base font-medium text-[#666] hover:bg-[#f5f5f0]"
+              >
+                Dashboard
+              </Link>
+              <Link
+                href="/appointments"
+                className="block px-3 py-2 rounded-md text-base font-medium text-[#1a1a1a] bg-[#f5f5f0]"
+              >
+                Appointments
+              </Link>
+              <Link
+                href="/doctors"
+                className="block px-3 py-2 rounded-md text-base font-medium text-[#666] hover:bg-[#f5f5f0]"
+              >
+                Find Doctors
+              </Link>
+              <Link
+                href="/profile"
+                className="block px-3 py-2 rounded-md text-base font-medium text-[#666] hover:bg-[#f5f5f0]"
+              >
+                Profile
+              </Link>
+            </div>
+          </div>
+        )}
+      </nav>
+      
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+        <div className="space-y-6">
+          <div className="flex justify-between items-center">
+            <h2 className="text-2xl font-bold text-[#1a1a1a]">My Appointments</h2>
+            <button
+              onClick={() => setShowBookingForm(true)}
+              className="px-4 py-2 bg-[#1a1a1a] text-white rounded-lg hover:bg-gray-800 transition-colors text-sm"
+            >
+              New Appointment
+            </button>
+          </div>
+
+          {loading.appointments ? (
+            <div className="flex justify-center items-center h-64">
+              <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-[#1a1a1a]"></div>
+            </div>
+          ) : error ? (
+            <div className="bg-red-50 border-l-4 border-red-400 p-4">
+              <div className="flex">
+                <div className="flex-shrink-0">
+                  <X className="h-5 w-5 text-red-400" />
+                </div>
+                <div className="ml-3">
+                  <p className="text-sm text-red-700">{error}</p>
+                </div>
+              </div>
+            </div>
+          ) : appointments.length === 0 ? (
+            <div className="text-center py-12">
+              <Calendar className="mx-auto h-12 w-12 text-gray-400" />
+              <h3 className="mt-2 text-sm font-medium text-gray-900">No appointments</h3>
+              <p className="mt-1 text-sm text-gray-500">Get started by booking a new appointment.</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {appointments.map((appointment) => {
+                const appointmentDate = new Date(appointment.appointment_date)
+                const isPastAppointment = new Date() > appointmentDate
+                
+                return (
+                  <div
+                    key={appointment.id}
+                    className={`bg-white rounded-xl shadow-sm border border-[#f0f0f0] overflow-hidden ${
+                      isPastAppointment ? 'opacity-75' : ''
+                    }`}
+                  >
+                    <div className="p-6">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <div className="flex items-center gap-3 mb-2">
+                            <h3 className="font-semibold text-lg text-[#1a1a1a]">
+                              {appointment.doctors?.profiles?.full_name || 'Doctor'}
+                            </h3>
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                              {appointment.consultation_type === 'video' ? 'Video' : 'In-Person'}
+                            </span>
+                            <span
+                              className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                appointment.status === 'confirmed'
+                                  ? 'bg-green-100 text-green-800'
+                                  : appointment.status === 'pending'
+                                  ? 'bg-yellow-100 text-yellow-800'
+                                  : appointment.status === 'completed'
+                                  ? 'bg-gray-100 text-gray-800'
+                                  : 'bg-red-100 text-red-800'
+                              }`}
+                            >
+                              {appointment.status.charAt(0).toUpperCase() + appointment.status.slice(1)}
+                            </span>
+                          </div>
+                          
+                          <div className="flex items-center text-sm text-gray-600 mb-1">
+                            <Calendar className="h-4 w-4 mr-1.5 text-gray-400" />
+                            {formatDate(appointment.appointment_date)}
+                          </div>
+                          <div className="flex items-center text-sm text-gray-600">
+                            <Clock className="h-4 w-4 mr-1.5 text-gray-400" />
+                            {formatTime(appointment.appointment_date)}
+                          </div>
+                          
+                          {appointment.symptoms && (
+                            <div className="mt-3">
+                              <h4 className="text-sm font-medium text-gray-700">Symptoms:</h4>
+                              <p className="text-sm text-gray-600">{appointment.symptoms}</p>
+                            </div>
+                          )}
+                          
+                          {appointment.patient_notes && (
+                            <div className="mt-2">
+                              <h4 className="text-sm font-medium text-gray-700">Notes:</h4>
+                              <p className="text-sm text-gray-600">{appointment.patient_notes}</p>
+                            </div>
+                          )}
+                        </div>
+                        
+                        {!isPastAppointment && appointment.status !== 'cancelled' && (
+                          <div className="flex flex-col space-y-2">
+                            <button
+                              onClick={() => cancelAppointment(appointment.id)}
+                              className="px-3 py-1.5 text-sm font-medium text-red-600 hover:text-red-800 hover:bg-red-50 rounded-md transition-colors"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      
+                      {!isPastAppointment && appointment.status === 'confirmed' && appointment.consultation_type === 'video' && (
+                        <div className="mt-4 pt-4 border-t border-[#f0f0f0] flex justify-end">
+                          <button 
+                            className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg flex items-center"
+                            onClick={() => window.open(`/video-call/${appointment.id}`, '_blank')}
+                          >
+                            <Video className="w-4 h-4 mr-2" />
+                            Join Video Call
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      </main>
+    </div>
+  )
+}
